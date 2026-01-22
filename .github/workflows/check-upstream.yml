@@ -17,8 +17,11 @@ jobs:
       MORPHE_CLI_ASSET: ${{ vars.MORPHE_CLI_ASSET }}
       MORPHE_PATCHES_ASSET: ${{ vars.MORPHE_PATCHES_ASSET }}
       MORPHE_PATCH_EXTRA_ARGS: ${{ vars.MORPHE_PATCH_EXTRA_ARGS }}
-      YOUTUBE_APK_URL: ${{ vars.YOUTUBE_APK_URL }}
-      YOUTUBE_MUSIC_APK_URL: ${{ vars.YOUTUBE_MUSIC_APK_URL }}
+      APKMIRROR_ORG: ${{ vars.APKMIRROR_ORG }}
+      APKMIRROR_ARCH: ${{ vars.APKMIRROR_ARCH }}
+      APKMIRROR_DPI: ${{ vars.APKMIRROR_DPI }}
+      YOUTUBE_APKMIRROR_APP: ${{ vars.YOUTUBE_APKMIRROR_APP }}
+      YOUTUBE_MUSIC_APKMIRROR_APP: ${{ vars.YOUTUBE_MUSIC_APKMIRROR_APP }}
       DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
     steps:
       - name: Checkout
@@ -41,10 +44,6 @@ jobs:
       - name: Validate required inputs
         run: |
           set -euo pipefail
-          if [ -z "${YOUTUBE_APK_URL:-}" ] || [ -z "${YOUTUBE_MUSIC_APK_URL:-}" ]; then
-            echo "Missing YOUTUBE_APK_URL or YOUTUBE_MUSIC_APK_URL repo variable." >&2
-            exit 1
-          fi
           if [ -z "${DISCORD_WEBHOOK_URL:-}" ]; then
             echo "Missing DISCORD_WEBHOOK_URL secret." >&2
             exit 1
@@ -117,13 +116,74 @@ jobs:
           set -euo pipefail
           curl -fsSL "${{ steps.patches.outputs.asset_url }}" -o patches.mpp
 
-      - name: Download target APKs
+      - name: Detect compatible versions
+        id: versions
+        if: ${{ steps.patches.outputs.latest_tag != steps.patches.outputs.last_tag }}
+        run: |
+          set -euo pipefail
+
+          yt_pkg="com.google.android.youtube"
+          ytm_pkg="com.google.android.apps.youtube.music"
+
+          output=$(java -jar morphe-cli.jar list-versions -f "$yt_pkg" -f "$ytm_pkg" patches.mpp)
+
+          yt_version=$(echo "$output" | awk -v pkg="$yt_pkg" '
+            $0 ~ "Package name: "pkg {inblock=1; next}
+            inblock && $0 ~ /^\t/ {gsub(/\t/, "", $0); sub(/ .*/, "", $0); print $0; exit}
+          ')
+          ytm_version=$(echo "$output" | awk -v pkg="$ytm_pkg" '
+            $0 ~ "Package name: "pkg {inblock=1; next}
+            inblock && $0 ~ /^\t/ {gsub(/\t/, "", $0); sub(/ .*/, "", $0); print $0; exit}
+          ')
+
+          if [ -z "$yt_version" ] || [ -z "$ytm_version" ]; then
+            echo "Failed to detect compatible versions from morphe-cli output." >&2
+            echo "$output" >&2
+            exit 1
+          fi
+
+          echo "youtube_version=$yt_version" >> "$GITHUB_OUTPUT"
+          echo "youtube_music_version=$ytm_version" >> "$GITHUB_OUTPUT"
+
+      - name: Download target APKs from APKMirror
         if: ${{ steps.patches.outputs.latest_tag != steps.patches.outputs.last_tag }}
         run: |
           set -euo pipefail
           mkdir -p input
-          curl -fsSL "$YOUTUBE_APK_URL" -o input/youtube.apk
-          curl -fsSL "$YOUTUBE_MUSIC_APK_URL" -o input/youtube-music.apk
+
+          apkmirror_org="${APKMIRROR_ORG:-google-inc}"
+          youtube_app="${YOUTUBE_APKMIRROR_APP:-youtube}"
+          youtube_music_app="${YOUTUBE_MUSIC_APKMIRROR_APP:-youtube-music}"
+          arch="${APKMIRROR_ARCH:-arm64-v8a}"
+          dpi="${APKMIRROR_DPI:-nodpi}"
+
+          npm install -g apkmirror-downloader
+
+          cat > apps.json <<EOF
+          {
+            "options": {
+              "arch": "${arch}",
+              "dpi": "${dpi}",
+              "outDir": "input"
+            },
+            "apps": [
+              {
+                "org": "${apkmirror_org}",
+                "repo": "${youtube_app}",
+                "version": "${{ steps.versions.outputs.youtube_version }}",
+                "outFile": "youtube.apk"
+              },
+              {
+                "org": "${apkmirror_org}",
+                "repo": "${youtube_music_app}",
+                "version": "${{ steps.versions.outputs.youtube_music_version }}",
+                "outFile": "youtube-music.apk"
+              }
+            ]
+          }
+          EOF
+
+          apkmd apps.json
 
       - name: Patch APKs
         if: ${{ steps.patches.outputs.latest_tag != steps.patches.outputs.last_tag }}
