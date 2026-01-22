@@ -66,7 +66,9 @@ jobs:
           patches_asset="${MORPHE_PATCHES_ASSET:-patches.mpp}"
 
           releases_json=$(curl -fsSL "https://api.github.com/repos/${patches_repo}/releases?per_page=10")
-          latest_tag=$(echo "$releases_json" | jq -r '[.[] | select(.draft==false)] | .[0].tag_name')
+          latest_release=$(echo "$releases_json" | jq -c '[.[] | select(.draft==false)] | .[0]')
+          latest_tag=$(echo "$latest_release" | jq -r '.tag_name')
+          is_prerelease=$(echo "$latest_release" | jq -r '.prerelease')
           if [ -z "$latest_tag" ] || [ "$latest_tag" = "null" ]; then
             echo "No releases found for ${patches_repo}." >&2
             exit 1
@@ -93,6 +95,7 @@ jobs:
           echo "latest_tag=${latest_tag}" >> "$GITHUB_OUTPUT"
           echo "asset_url=${asset_url}" >> "$GITHUB_OUTPUT"
           echo "last_tag=${last_tag}" >> "$GITHUB_OUTPUT"
+          echo "is_prerelease=${is_prerelease}" >> "$GITHUB_OUTPUT"
 
       - name: Skip if already processed
         if: ${{ steps.patches.outputs.latest_tag == steps.patches.outputs.last_tag }}
@@ -241,11 +244,18 @@ jobs:
           tag="patched-${{ steps.patches.outputs.latest_tag }}"
           title="Patched APKs (${{ steps.patches.outputs.latest_tag }})"
           notes="Automated build for patches release ${{ steps.patches.outputs.latest_tag }}."
+          is_prerelease="${{ steps.patches.outputs.is_prerelease }}"
+
+          prerelease_flag=""
+          if [ "$is_prerelease" = "true" ]; then
+            prerelease_flag="--prerelease"
+            title="Patched APKs (${{ steps.patches.outputs.latest_tag }}) [Pre-release]"
+          fi
 
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" "dist/rvx-core-patched.apk" "dist/rvx-media-patched.apk" --clobber
           else
-            gh release create "$tag" "dist/rvx-core-patched.apk" "dist/rvx-media-patched.apk" --title "$title" --notes "$notes"
+            gh release create "$tag" "dist/rvx-core-patched.apk" "dist/rvx-media-patched.apk" --title "$title" --notes "$notes" $prerelease_flag
           fi
 
       - name: Notify Discord
