@@ -22,6 +22,8 @@ jobs:
       APKMIRROR_DPI: ${{ vars.APKMIRROR_DPI }}
       YOUTUBE_APKMIRROR_APP: ${{ vars.YOUTUBE_APKMIRROR_APP }}
       YOUTUBE_MUSIC_APKMIRROR_APP: ${{ vars.YOUTUBE_MUSIC_APKMIRROR_APP }}
+      YOUTUBE_VERSION: ${{ vars.YOUTUBE_VERSION }}
+      YOUTUBE_MUSIC_VERSION: ${{ vars.YOUTUBE_MUSIC_VERSION }}
       DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
     steps:
       - name: Checkout
@@ -32,6 +34,11 @@ jobs:
         with:
           distribution: temurin
           java-version: "11"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
 
       - name: Restore last release state
         uses: actions/cache@v4
@@ -109,7 +116,12 @@ jobs:
             [.[] | select(.tag_name==$tag) | .assets[] | select(.name==$name) | .browser_download_url][0]
           ')
           if [ -z "$cli_url" ] || [ "$cli_url" = "null" ]; then
-            echo "Asset ${cli_asset} not found in ${cli_repo} release ${cli_tag}." >&2
+            cli_url=$(echo "$cli_json" | jq -r --arg tag "$cli_tag" '
+              [.[] | select(.tag_name==$tag) | .assets[] | select(.name | endswith(".jar")) | .browser_download_url][0]
+            ')
+          fi
+          if [ -z "$cli_url" ] || [ "$cli_url" = "null" ]; then
+            echo "No .jar asset found in ${cli_repo} release ${cli_tag}." >&2
             exit 1
           fi
 
@@ -129,6 +141,12 @@ jobs:
 
           yt_pkg="com.google.android.youtube"
           ytm_pkg="com.google.android.apps.youtube.music"
+
+          if [ -n "${YOUTUBE_VERSION:-}" ] && [ -n "${YOUTUBE_MUSIC_VERSION:-}" ]; then
+            echo "youtube_version=${YOUTUBE_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "youtube_music_version=${YOUTUBE_MUSIC_VERSION}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           output=$(java -jar morphe-cli.jar list-versions -f "$yt_pkg" -f "$ytm_pkg" patches.mpp)
 
@@ -188,7 +206,16 @@ jobs:
           }
           EOF
 
-          apkmd apps.json
+          for attempt in 1 2 3; do
+            if apkmd apps.json; then
+              break
+            fi
+            echo "APKMirror download failed (attempt $attempt). Retrying..." >&2
+            sleep 10
+          done
+
+          test -f "$PWD/input/youtube.apk"
+          test -f "$PWD/input/youtube-music.apk"
 
       - name: Patch APKs
         if: ${{ steps.patches.outputs.latest_tag != steps.patches.outputs.last_tag }}
