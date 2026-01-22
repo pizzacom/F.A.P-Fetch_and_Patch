@@ -206,8 +206,9 @@ jobs:
           }
           EOF
 
+          apkmd_bin=$(command -v apkmd)
           for attempt in 1 2 3; do
-            if npx -y apkmirror-downloader apps.json; then
+            if node "$apkmd_bin" apps.json; then
               break
             fi
             echo "APKMirror download failed (attempt $attempt). Retrying..." >&2
