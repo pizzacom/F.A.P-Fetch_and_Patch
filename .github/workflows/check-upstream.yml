@@ -1,0 +1,194 @@
+name: Patch APKs
+
+on:
+  schedule:
+    - cron: "0 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    env:
+      PATCHES_REPO: ${{ vars.PATCHES_REPO }}
+      MORPHE_CLI_REPO: ${{ vars.MORPHE_CLI_REPO }}
+      MORPHE_CLI_ASSET: ${{ vars.MORPHE_CLI_ASSET }}
+      MORPHE_PATCHES_ASSET: ${{ vars.MORPHE_PATCHES_ASSET }}
+      MORPHE_PATCH_EXTRA_ARGS: ${{ vars.MORPHE_PATCH_EXTRA_ARGS }}
+      YOUTUBE_APK_URL: ${{ vars.YOUTUBE_APK_URL }}
+      YOUTUBE_MUSIC_APK_URL: ${{ vars.YOUTUBE_MUSIC_APK_URL }}
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 11
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "11"
+
+      - name: Restore last release state
+        uses: actions/cache@v4
+        with:
+          path: .state
+          key: state-${{ github.run_id }}
+          restore-keys: |
+            state-
+
+      - name: Validate required inputs
+        run: |
+          set -euo pipefail
+          if [ -z "${YOUTUBE_APK_URL:-}" ] || [ -z "${YOUTUBE_MUSIC_APK_URL:-}" ]; then
+            echo "Missing YOUTUBE_APK_URL or YOUTUBE_MUSIC_APK_URL repo variable." >&2
+            exit 1
+          fi
+          if [ -z "${DISCORD_WEBHOOK_URL:-}" ]; then
+            echo "Missing DISCORD_WEBHOOK_URL secret." >&2
+            exit 1
+          fi
+
+      - name: Check for new patches release
+        id: patches
+        run: |
+          set -euo pipefail
+          mkdir -p .state
+
+          patches_repo="${PATCHES_REPO:-MorpheApp/morphe-patches}"
+          patches_asset="${MORPHE_PATCHES_ASSET:-patches.mpp}"
+
+          releases_json=$(curl -fsSL "https://api.github.com/repos/${patches_repo}/releases?per_page=10")
+          latest_tag=$(echo "$releases_json" | jq -r '[.[] | select(.draft==false)] | .[0].tag_name')
+          if [ -z "$latest_tag" ] || [ "$latest_tag" = "null" ]; then
+            echo "No releases found for ${patches_repo}." >&2
+            exit 1
+          fi
+
+          asset_url=$(echo "$releases_json" | jq -r --arg tag "$latest_tag" --arg name "$patches_asset" '
+            [.[] | select(.tag_name==$tag) | .assets[] | select(.name==$name) | .browser_download_url][0]
+          ')
+          if [ -z "$asset_url" ] || [ "$asset_url" = "null" ]; then
+            echo "Asset ${patches_asset} not found in ${patches_repo} release ${latest_tag}." >&2
+            exit 1
+          fi
+
+          last_tag=""
+          if [ -f .state/last_release.txt ]; then
+            last_tag=$(cat .state/last_release.txt)
+          fi
+
+          echo "latest_tag=${latest_tag}" >> "$GITHUB_OUTPUT"
+          echo "asset_url=${asset_url}" >> "$GITHUB_OUTPUT"
+          echo "last_tag=${last_tag}" >> "$GITHUB_OUTPUT"
+
+      - name: Skip if already processed
+        if: ${{ steps.patches.outputs.latest_tag == steps.patches.outputs.last_tag }}
+        run: echo "Already processed release ${{ steps.patches.outputs.latest_tag }}"
+
+      - name: Download Morphe CLI
+        if: ${{ steps.patches.outputs.latest_tag != steps.patches.outputs.last_tag }}
+        run: |
+          set -euo pipefail
+          cli_repo="${MORPHE_CLI_REPO:-MorpheApp/morphe-cli}"
+          cli_asset="${MORPHE_CLI_ASSET:-morphe-cli.jar}"
+
+          cli_json=$(curl -fsSL "https://api.github.com/repos/${cli_repo}/releases?per_page=10")
+          cli_tag=$(echo "$cli_json" | jq -r '[.[] | select(.draft==false)] | .[0].tag_name')
+          if [ -z "$cli_tag" ] || [ "$cli_tag" = "null" ]; then
+            echo "No releases found for ${cli_repo}." >&2
+            exit 1
+          fi
+
+          cli_url=$(echo "$cli_json" | jq -r --arg tag "$cli_tag" --arg name "$cli_asset" '
+            [.[] | select(.tag_name==$tag) | .assets[] | select(.name==$name) | .browser_download_url][0]
+          ')
+          if [ -z "$cli_url" ] || [ "$cli_url" = "null" ]; then
+            echo "Asset ${cli_asset} not found in ${cli_repo} release ${cli_tag}." >&2
+            exit 1
+          fi
+
+          curl -fsSL "$cli_url" -o morphe-cli.jar
+
+      - name: Download patches bundle
+        if: ${{ steps.patches.outputs.latest_tag != steps.patches.outputs.last_tag }}
+        run: |
+          set -euo pipefail
+          curl -fsSL "${{ steps.patches.outputs.asset_url }}" -o patches.mpp
+
+      - name: Download target APKs
+        if: ${{ steps.patches.outputs.latest_tag != steps.patches.outputs.last_tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p input
+          curl -fsSL "$YOUTUBE_APK_URL" -o input/youtube.apk
+          curl -fsSL "$YOUTUBE_MUSIC_APK_URL" -o input/youtube-music.apk
+
+      - name: Patch APKs
+        if: ${{ steps.patches.outputs.latest_tag != steps.patches.outputs.last_tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+
+          extra_args=${MORPHE_PATCH_EXTRA_ARGS:-}
+
+          java -jar morphe-cli.jar patch -p patches.mpp -o dist/youtube-patched.apk $extra_args input/youtube.apk
+          java -jar morphe-cli.jar patch -p patches.mpp -o dist/youtube-music-patched.apk $extra_args input/youtube-music.apk
+
+          test -f "$PWD/dist/youtube-patched.apk"
+          test -f "$PWD/dist/youtube-music-patched.apk"
+
+      - name: Create or update release
+        if: ${{ steps.patches.outputs.latest_tag != steps.patches.outputs.last_tag }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="patched-${{ steps.patches.outputs.latest_tag }}"
+          title="Patched APKs (${{ steps.patches.outputs.latest_tag }})"
+          notes="Automated build for patches release ${{ steps.patches.outputs.latest_tag }}."
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "dist/youtube-patched.apk" "dist/youtube-music-patched.apk" --clobber
+          else
+            gh release create "$tag" "dist/youtube-patched.apk" "dist/youtube-music-patched.apk" --title "$title" --notes "$notes"
+          fi
+
+      - name: Notify Discord
+        if: ${{ steps.patches.outputs.latest_tag != steps.patches.outputs.last_tag }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          repo="${GITHUB_REPOSITORY}"
+          tag="patched-${{ steps.patches.outputs.latest_tag }}"
+
+          release_json=$(gh api "repos/${repo}/releases/tags/${tag}")
+          release_url=$(echo "$release_json" | jq -r '.html_url')
+          yt_url=$(echo "$release_json" | jq -r '.assets[] | select(.name=="youtube-patched.apk") | .browser_download_url')
+          ytm_url=$(echo "$release_json" | jq -r '.assets[] | select(.name=="youtube-music-patched.apk") | .browser_download_url')
+
+          payload=$(jq -n \
+            --arg title "New patched APKs" \
+            --arg release "$release_url" \
+            --arg yt "$yt_url" \
+            --arg ytm "$ytm_url" \
+            '"'"'{"'"'
+              "username": "Morphe Patcher",
+              "embeds": [
+                {
+                  "title": $title,
+                  "description": "Release: " + $release + "\nYouTube: " + $yt + "\nYouTube Music: " + $ytm,
+                  "color": 5793266
+                }
+              ]
+            }'"'"')
+
+          curl -fsSL -H "Content-Type: application/json" -d "$payload" "$DISCORD_WEBHOOK_URL"
+
+      - name: Save release state
+        if: ${{ steps.patches.outputs.latest_tag != steps.patches.outputs.last_tag }}
+        run: |
+          set -euo pipefail
+          echo "${{ steps.patches.outputs.latest_tag }}" > .state/last_release.txt
