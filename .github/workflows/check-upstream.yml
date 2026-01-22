@@ -155,25 +155,27 @@ jobs:
           echo "Morphe CLI output:"
           echo "$output"
 
-          # Try multiple parsing strategies
-          # Strategy 1: Look for version after package name line (tab-indented)
+          # Parse versions - get the LAST (newest/recommended) version for each package
+          # The list-versions output shows versions with the newest/recommended at the bottom
           yt_version=$(echo "$output" | awk -v pkg="$yt_pkg" '
             $0 ~ "Package name: "pkg {inblock=1; next}
-            inblock && /^[[:space:]]/ {gsub(/^[[:space:]]+/, ""); sub(/[[:space:]].*/, ""); if ($0 ~ /^[0-9]/) {print; exit}}
+            inblock && /^[[:space:]]/ {gsub(/^[[:space:]]+/, ""); sub(/[[:space:]].*/, ""); if ($0 ~ /^[0-9]/) {ver=$0}}
             inblock && /^Package name:/ {exit}
+            END {print ver}
           ')
           ytm_version=$(echo "$output" | awk -v pkg="$ytm_pkg" '
             $0 ~ "Package name: "pkg {inblock=1; next}
-            inblock && /^[[:space:]]/ {gsub(/^[[:space:]]+/, ""); sub(/[[:space:]].*/, ""); if ($0 ~ /^[0-9]/) {print; exit}}
+            inblock && /^[[:space:]]/ {gsub(/^[[:space:]]+/, ""); sub(/[[:space:]].*/, ""); if ($0 ~ /^[0-9]/) {ver=$0}}
             inblock && /^Package name:/ {exit}
+            END {print ver}
           ')
 
-          # Strategy 2: If first strategy failed, try grep-based approach
+          # Fallback: try grep-based approach getting the last version match
           if [ -z "$yt_version" ]; then
-            yt_version=$(echo "$output" | grep -A1 "$yt_pkg" | tail -1 | tr -d '[:space:]' | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+')
+            yt_version=$(echo "$output" | grep -A100 "$yt_pkg" | grep -oE '^[[:space:]]+[0-9]+\.[0-9]+\.[0-9]+' | tail -1 | tr -d '[:space:]')
           fi
           if [ -z "$ytm_version" ]; then
-            ytm_version=$(echo "$output" | grep -A1 "$ytm_pkg" | tail -1 | tr -d '[:space:]' | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+')
+            ytm_version=$(echo "$output" | grep -A100 "$ytm_pkg" | grep -oE '^[[:space:]]+[0-9]+\.[0-9]+\.[0-9]+' | tail -1 | tr -d '[:space:]')
           fi
 
           if [ -z "$yt_version" ] || [ -z "$ytm_version" ]; then
@@ -325,24 +327,50 @@ jobs:
           set -euo pipefail
           repo="${GITHUB_REPOSITORY}"
           tag="patched-${{ steps.patches.outputs.latest_tag }}"
+          is_prerelease="${{ steps.patches.outputs.is_prerelease }}"
 
           release_json=$(gh api "repos/${repo}/releases/tags/${tag}")
-          release_url=$(echo "$release_json" | jq -r '.html_url')
           yt_url=$(echo "$release_json" | jq -r '.assets[] | select(.name=="rvx-core-patched.apk") | .browser_download_url')
           ytm_url=$(echo "$release_json" | jq -r '.assets[] | select(.name=="rvx-media-patched.apk") | .browser_download_url')
 
+          # Set color and title based on release type
+          if [ "$is_prerelease" = "true" ]; then
+            color=16744192  # Orange for pre-release
+            title="🧪 New Pre-release APKs Available"
+          else
+            color=5763719   # Green for stable
+            title="✅ New Patched APKs Available"
+          fi
+
           payload=$(jq -n \
-            --arg title "New patched APKs" \
-            --arg release "$release_url" \
+            --arg title "$title" \
             --arg yt "$yt_url" \
             --arg ytm "$ytm_url" \
+            --arg yt_ver "${{ steps.versions.outputs.youtube_version }}" \
+            --arg ytm_ver "${{ steps.versions.outputs.youtube_music_version }}" \
+            --argjson color "$color" \
             '{
               "username": "Morphe Patcher",
               "embeds": [
                 {
                   "title": $title,
-                  "description": ("Release: " + $release + "\nYouTube: " + $yt + "\nYouTube Music: " + $ytm),
-                  "color": 5793266
+                  "color": $color,
+                  "fields": [
+                    {
+                      "name": "📺 YouTube",
+                      "value": ("Version: `" + $yt_ver + "`\n[⬇️ Download](" + $yt + ")"),
+                      "inline": true
+                    },
+                    {
+                      "name": "🎵 YouTube Music",
+                      "value": ("Version: `" + $ytm_ver + "`\n[⬇️ Download](" + $ytm + ")"),
+                      "inline": true
+                    }
+                  ],
+                  "footer": {
+                    "text": "Patches: ${{ steps.patches.outputs.latest_tag }}"
+                  },
+                  "timestamp": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"
                 }
               ]
             }')
