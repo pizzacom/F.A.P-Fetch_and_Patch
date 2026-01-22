@@ -66,10 +66,15 @@ jobs:
           fi
 
           asset_url=$(echo "$releases_json" | jq -r --arg tag "$latest_tag" --arg name "$patches_asset" '
-            [.[] | select(.tag_name==$tag) | .assets[] | select(.name==$name) | .browser_download_url][0]
+            ([.[] | select(.tag_name==$tag) | .assets[] | select(.name==$name) | .browser_download_url][0]) // empty
           ')
           if [ -z "$asset_url" ] || [ "$asset_url" = "null" ]; then
-            echo "Asset ${patches_asset} not found in ${patches_repo} release ${latest_tag}." >&2
+            asset_url=$(echo "$releases_json" | jq -r --arg tag "$latest_tag" '
+              [.[] | select(.tag_name==$tag) | .assets[] | select(.name | endswith(".mpp")) | .browser_download_url][0]
+            ')
+          fi
+          if [ -z "$asset_url" ] || [ "$asset_url" = "null" ]; then
+            echo "No .mpp asset found in ${patches_repo} release ${latest_tag}." >&2
             exit 1
           fi
 
