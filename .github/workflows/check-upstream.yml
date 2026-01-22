@@ -152,26 +152,44 @@ jobs:
           fi
 
           output=$(java -jar morphe-cli.jar list-versions -f "$yt_pkg" -f "$ytm_pkg" patches.mpp)
+          echo "Morphe CLI output:"
+          echo "$output"
 
+          # Try multiple parsing strategies
+          # Strategy 1: Look for version after package name line (tab-indented)
           yt_version=$(echo "$output" | awk -v pkg="$yt_pkg" '
             $0 ~ "Package name: "pkg {inblock=1; next}
-            inblock && $0 ~ /^\t/ {gsub(/\t/, "", $0); sub(/ .*/, "", $0); print $0; exit}
+            inblock && /^[[:space:]]/ {gsub(/^[[:space:]]+/, ""); sub(/[[:space:]].*/, ""); if ($0 ~ /^[0-9]/) {print; exit}}
+            inblock && /^Package name:/ {exit}
           ')
           ytm_version=$(echo "$output" | awk -v pkg="$ytm_pkg" '
             $0 ~ "Package name: "pkg {inblock=1; next}
-            inblock && $0 ~ /^\t/ {gsub(/\t/, "", $0); sub(/ .*/, "", $0); print $0; exit}
+            inblock && /^[[:space:]]/ {gsub(/^[[:space:]]+/, ""); sub(/[[:space:]].*/, ""); if ($0 ~ /^[0-9]/) {print; exit}}
+            inblock && /^Package name:/ {exit}
           ')
+
+          # Strategy 2: If first strategy failed, try grep-based approach
+          if [ -z "$yt_version" ]; then
+            yt_version=$(echo "$output" | grep -A1 "$yt_pkg" | tail -1 | tr -d '[:space:]' | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+')
+          fi
+          if [ -z "$ytm_version" ]; then
+            ytm_version=$(echo "$output" | grep -A1 "$ytm_pkg" | tail -1 | tr -d '[:space:]' | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+')
+          fi
 
           if [ -z "$yt_version" ] || [ -z "$ytm_version" ]; then
             echo "Failed to detect compatible versions from morphe-cli output." >&2
-            echo "$output" >&2
+            echo "Detected YouTube version: '$yt_version'" >&2
+            echo "Detected YouTube Music version: '$ytm_version'" >&2
             exit 1
           fi
 
+          echo "Detected YouTube version: $yt_version"
+          echo "Detected YouTube Music version: $ytm_version"
           echo "youtube_version=$yt_version" >> "$GITHUB_OUTPUT"
           echo "youtube_music_version=$ytm_version" >> "$GITHUB_OUTPUT"
 
       - name: Download target APKs from APKMirror
+        id: download
         if: ${{ steps.patches.outputs.latest_tag != steps.patches.outputs.last_tag }}
         run: |
           set -euo pipefail
@@ -210,16 +228,57 @@ jobs:
           EOF
 
           apkmd_bin=$(command -v apkmd)
+          download_success=false
+          
+          # 5 minute timeout per attempt (300 seconds)
+          TIMEOUT_SECONDS=300
+          
           for attempt in 1 2 3; do
-            if node "$apkmd_bin" apps.json; then
+            echo "Download attempt $attempt of 3 (timeout: ${TIMEOUT_SECONDS}s)..."
+            if timeout "${TIMEOUT_SECONDS}s" node "$apkmd_bin" apps.json; then
+              download_success=true
               break
             fi
-            echo "APKMirror download failed (attempt $attempt). Retrying..." >&2
-            sleep 10
+            exit_code=$?
+            if [ $exit_code -eq 124 ]; then
+              echo "Download timed out after ${TIMEOUT_SECONDS} seconds (attempt $attempt)." >&2
+            else
+              echo "APKMirror download failed with exit code $exit_code (attempt $attempt)." >&2
+            fi
+            if [ $attempt -lt 3 ]; then
+              echo "Retrying in 10 seconds..."
+              sleep 10
+            fi
           done
+
+          if [ "$download_success" != "true" ]; then
+            echo "download_failed=true" >> "$GITHUB_OUTPUT"
+            echo "All download attempts failed." >&2
+            exit 1
+          fi
 
           test -f "$PWD/input/rvx-core.apk"
           test -f "$PWD/input/rvx-media.apk"
+          echo "download_failed=false" >> "$GITHUB_OUTPUT"
+
+      - name: Notify Discord on download failure
+        if: ${{ failure() && steps.download.outputs.download_failed == 'true' }}
+        run: |
+          set -euo pipefail
+          payload=$(jq -n \
+            --arg yt_ver "${{ steps.versions.outputs.youtube_version }}" \
+            --arg ytm_ver "${{ steps.versions.outputs.youtube_music_version }}" \
+            '{
+              "username": "Morphe Patcher",
+              "embeds": [
+                {
+                  "title": "⚠️ APK Download Failed",
+                  "description": ("Download from APKMirror timed out or failed after 3 attempts.\n\nYouTube version: " + $yt_ver + "\nYouTube Music version: " + $ytm_ver),
+                  "color": 15158332
+                }
+              ]
+            }')
+          curl -fsSL -H "Content-Type: application/json" -d "$payload" "$DISCORD_WEBHOOK_URL"
 
       - name: Patch APKs
         if: ${{ steps.patches.outputs.latest_tag != steps.patches.outputs.last_tag }}
