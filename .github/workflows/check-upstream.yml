@@ -194,13 +194,13 @@ jobs:
                 "org": "${apkmirror_org}",
                 "repo": "${youtube_app}",
                 "version": "${{ steps.versions.outputs.youtube_version }}",
-                "outFile": "youtube.apk"
+                "outFile": "rvx-core.apk"
               },
               {
                 "org": "${apkmirror_org}",
                 "repo": "${youtube_music_app}",
                 "version": "${{ steps.versions.outputs.youtube_music_version }}",
-                "outFile": "youtube-music.apk"
+                "outFile": "rvx-media.apk"
               }
             ]
           }
@@ -215,8 +215,8 @@ jobs:
             sleep 10
           done
 
-          test -f "$PWD/input/youtube.apk"
-          test -f "$PWD/input/youtube-music.apk"
+          test -f "$PWD/input/rvx-core.apk"
+          test -f "$PWD/input/rvx-media.apk"
 
       - name: Patch APKs
         if: ${{ steps.patches.outputs.latest_tag != steps.patches.outputs.last_tag }}
@@ -226,11 +226,11 @@ jobs:
 
           extra_args=${MORPHE_PATCH_EXTRA_ARGS:-}
 
-          java -jar morphe-cli.jar patch -p patches.mpp -o dist/youtube-patched.apk $extra_args input/youtube.apk
-          java -jar morphe-cli.jar patch -p patches.mpp -o dist/youtube-music-patched.apk $extra_args input/youtube-music.apk
+          java -jar morphe-cli.jar patch -p patches.mpp -o dist/rvx-core-patched.apk $extra_args input/rvx-core.apk
+          java -jar morphe-cli.jar patch -p patches.mpp -o dist/rvx-media-patched.apk $extra_args input/rvx-media.apk
 
-          test -f "$PWD/dist/youtube-patched.apk"
-          test -f "$PWD/dist/youtube-music-patched.apk"
+          test -f "$PWD/dist/rvx-core-patched.apk"
+          test -f "$PWD/dist/rvx-media-patched.apk"
 
       - name: Create or update release
         if: ${{ steps.patches.outputs.latest_tag != steps.patches.outputs.last_tag }}
@@ -243,9 +243,9 @@ jobs:
           notes="Automated build for patches release ${{ steps.patches.outputs.latest_tag }}."
 
           if gh release view "$tag" >/dev/null 2>&1; then
-            gh release upload "$tag" "dist/youtube-patched.apk" "dist/youtube-music-patched.apk" --clobber
+            gh release upload "$tag" "dist/rvx-core-patched.apk" "dist/rvx-media-patched.apk" --clobber
           else
-            gh release create "$tag" "dist/youtube-patched.apk" "dist/youtube-music-patched.apk" --title "$title" --notes "$notes"
+            gh release create "$tag" "dist/rvx-core-patched.apk" "dist/rvx-media-patched.apk" --title "$title" --notes "$notes"
           fi
 
       - name: Notify Discord
@@ -259,24 +259,24 @@ jobs:
 
           release_json=$(gh api "repos/${repo}/releases/tags/${tag}")
           release_url=$(echo "$release_json" | jq -r '.html_url')
-          yt_url=$(echo "$release_json" | jq -r '.assets[] | select(.name=="youtube-patched.apk") | .browser_download_url')
-          ytm_url=$(echo "$release_json" | jq -r '.assets[] | select(.name=="youtube-music-patched.apk") | .browser_download_url')
+          yt_url=$(echo "$release_json" | jq -r '.assets[] | select(.name=="rvx-core-patched.apk") | .browser_download_url')
+          ytm_url=$(echo "$release_json" | jq -r '.assets[] | select(.name=="rvx-media-patched.apk") | .browser_download_url')
 
           payload=$(jq -n \
             --arg title "New patched APKs" \
             --arg release "$release_url" \
             --arg yt "$yt_url" \
             --arg ytm "$ytm_url" \
-            '"'"'{"'"'
+            '{
               "username": "Morphe Patcher",
               "embeds": [
                 {
                   "title": $title,
-                  "description": "Release: " + $release + "\nYouTube: " + $yt + "\nYouTube Music: " + $ytm,
+                  "description": ("Release: " + $release + "\nYouTube: " + $yt + "\nYouTube Music: " + $ytm),
                   "color": 5793266
                 }
               ]
-            }'"'"')
+            }')
 
           curl -fsSL -H "Content-Type: application/json" -d "$payload" "$DISCORD_WEBHOOK_URL"
 
