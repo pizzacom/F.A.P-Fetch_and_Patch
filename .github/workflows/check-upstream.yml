@@ -4,6 +4,12 @@ on:
   schedule:
     - cron: "0 * * * *"
   workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: 'Force rebuild even if already processed'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -98,11 +104,11 @@ jobs:
           echo "is_prerelease=${is_prerelease}" >> "$GITHUB_OUTPUT"
 
       - name: Skip if already processed
-        if: ${{ steps.patches.outputs.latest_tag == steps.patches.outputs.last_tag }}
+        if: ${{ steps.patches.outputs.latest_tag == steps.patches.outputs.last_tag && inputs.force_rebuild != true }}
         run: echo "Already processed release ${{ steps.patches.outputs.latest_tag }}"
 
       - name: Download Morphe CLI
-        if: ${{ steps.patches.outputs.latest_tag != steps.patches.outputs.last_tag }}
+        if: ${{ steps.patches.outputs.latest_tag != steps.patches.outputs.last_tag || inputs.force_rebuild == true }}
         run: |
           set -euo pipefail
           cli_repo="${MORPHE_CLI_REPO:-MorpheApp/morphe-cli}"
@@ -131,14 +137,14 @@ jobs:
           curl -fsSL "$cli_url" -o morphe-cli.jar
 
       - name: Download patches bundle
-        if: ${{ steps.patches.outputs.latest_tag != steps.patches.outputs.last_tag }}
+        if: ${{ steps.patches.outputs.latest_tag != steps.patches.outputs.last_tag || inputs.force_rebuild == true }}
         run: |
           set -euo pipefail
           curl -fsSL "${{ steps.patches.outputs.asset_url }}" -o patches.mpp
 
       - name: Detect compatible versions
         id: versions
-        if: ${{ steps.patches.outputs.latest_tag != steps.patches.outputs.last_tag }}
+        if: ${{ steps.patches.outputs.latest_tag != steps.patches.outputs.last_tag || inputs.force_rebuild == true }}
         run: |
           set -euo pipefail
 
@@ -192,7 +198,7 @@ jobs:
 
       - name: Download target APKs from APKMirror
         id: download
-        if: ${{ steps.patches.outputs.latest_tag != steps.patches.outputs.last_tag }}
+        if: ${{ steps.patches.outputs.latest_tag != steps.patches.outputs.last_tag || inputs.force_rebuild == true }}
         run: |
           set -euo pipefail
           mkdir -p input
@@ -283,7 +289,7 @@ jobs:
           curl -fsSL -H "Content-Type: application/json" -d "$payload" "$DISCORD_WEBHOOK_URL"
 
       - name: Patch APKs
-        if: ${{ steps.patches.outputs.latest_tag != steps.patches.outputs.last_tag }}
+        if: ${{ steps.patches.outputs.latest_tag != steps.patches.outputs.last_tag || inputs.force_rebuild == true }}
         run: |
           set -euo pipefail
           mkdir -p dist
@@ -297,7 +303,7 @@ jobs:
           test -f "$PWD/dist/rvx-media-patched.apk"
 
       - name: Create or update release
-        if: ${{ steps.patches.outputs.latest_tag != steps.patches.outputs.last_tag }}
+        if: ${{ steps.patches.outputs.latest_tag != steps.patches.outputs.last_tag || inputs.force_rebuild == true }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -320,7 +326,7 @@ jobs:
           fi
 
       - name: Notify Discord
-        if: ${{ steps.patches.outputs.latest_tag != steps.patches.outputs.last_tag }}
+        if: ${{ steps.patches.outputs.latest_tag != steps.patches.outputs.last_tag || inputs.force_rebuild == true }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -378,7 +384,7 @@ jobs:
           curl -fsSL -H "Content-Type: application/json" -d "$payload" "$DISCORD_WEBHOOK_URL"
 
       - name: Save release state
-        if: ${{ steps.patches.outputs.latest_tag != steps.patches.outputs.last_tag }}
+        if: ${{ steps.patches.outputs.latest_tag != steps.patches.outputs.last_tag || inputs.force_rebuild == true }}
         run: |
           set -euo pipefail
           echo "${{ steps.patches.outputs.latest_tag }}" > .state/last_release.txt
