@@ -31,7 +31,7 @@ jobs:
       YOUTUBE_VERSION: ${{ vars.YOUTUBE_VERSION }}
       YOUTUBE_MUSIC_VERSION: ${{ vars.YOUTUBE_MUSIC_VERSION }}
       DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-      DISCORD_ROLE_ID: ${{ vars.DISCORD_ROLE_ID }}
+      DISCORD_ROLE_ID: ${{ secrets.DISCORD_ROLE_ID }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
