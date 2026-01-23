@@ -2,7 +2,7 @@ name: Patch APKs
 
 on:
   schedule:
-    - cron: "0 * * * *"
+    - cron: "0 */6 * * *"  # Every 6 hours
   workflow_dispatch:
     inputs:
       force_rebuild:
@@ -31,6 +31,7 @@ jobs:
       YOUTUBE_VERSION: ${{ vars.YOUTUBE_VERSION }}
       YOUTUBE_MUSIC_VERSION: ${{ vars.YOUTUBE_MUSIC_VERSION }}
       DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+      DISCORD_ROLE_ID: ${{ vars.DISCORD_ROLE_ID }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -273,10 +274,19 @@ jobs:
         if: ${{ failure() && steps.download.outputs.download_failed == 'true' }}
         run: |
           set -euo pipefail
+          
+          # Role mention (set DISCORD_ROLE_ID in repository variables)
+          role_ping=""
+          if [ -n "${DISCORD_ROLE_ID:-}" ]; then
+            role_ping="<@&${DISCORD_ROLE_ID}>"
+          fi
+          
           payload=$(jq -n \
             --arg yt_ver "${{ steps.versions.outputs.youtube_version }}" \
             --arg ytm_ver "${{ steps.versions.outputs.youtube_music_version }}" \
+            --arg ping "$role_ping" \
             '{
+              "content": (if $ping != "" then $ping else null end),
               "username": "Morphe Patcher",
               "embeds": [
                 {
@@ -348,14 +358,22 @@ jobs:
             title="✅ New Patched APKs Available"
           fi
 
+          # Role mention (set DISCORD_ROLE_ID in repository variables)
+          role_ping=""
+          if [ -n "${DISCORD_ROLE_ID:-}" ]; then
+            role_ping="<@&${DISCORD_ROLE_ID}>"
+          fi
+
           payload=$(jq -n \
             --arg title "$title" \
             --arg yt "$yt_url" \
             --arg ytm "$ytm_url" \
             --arg yt_ver "${{ steps.versions.outputs.youtube_version }}" \
             --arg ytm_ver "${{ steps.versions.outputs.youtube_music_version }}" \
+            --arg ping "$role_ping" \
             --argjson color "$color" \
             '{
+              "content": (if $ping != "" then $ping else null end),
               "username": "Morphe Patcher",
               "embeds": [
                 {
